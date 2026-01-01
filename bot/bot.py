@@ -51,6 +51,9 @@ def main():
     application = (
         ApplicationBuilder()
         .token(config.telegram.token)
+        .connect_timeout(60)
+        .read_timeout(60)
+        .get_updates_read_timeout(60)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .persistence(persistence)
@@ -154,15 +157,28 @@ async def reply_to(
         model = chat.model or config.openai.model
         asker = askers.create(model=model, question=question)
         if message.chat.type == Chat.PRIVATE and message.forward_date:
-            # this is a forwarded message, don't answer yet
-            answer = "This is a forwarded message. What should I do with it?"
+            # this is a forwarded message, don't answer
+            answer = "Это пересланное сообщение. Что с ним делать?"
         else:
             answer = await _ask_question(message, context, question, asker)
 
         user = UserData(context.user_data)
         user.messages.add(question, answer)
         logger.debug(user.messages)
-        await asker.reply(message, context, answer)
+        # Three attempts to send the reply
+        for i in range(3):
+            try:
+                await asker.reply(message, context, answer)
+                break
+            except Exception as reply_exc:
+                if i == 2:
+                    class_name = f"{reply_exc.__class__.__module__}.{reply_exc.__class__.__qualname__}"
+                    error_text = f"{class_name}: {reply_exc}"
+                    logger.error("Failed to send reply: %s", error_text)
+                    text = textwrap.shorten(f"⚠️ {error_text}", width=255, placeholder="...")
+                    await message.reply_text(text)
+                else:
+                    logger.warning(f"Attempt {i+1} failed to send message, retrying...")
 
     except Exception as exc:
         class_name = f"{exc.__class__.__module__}.{exc.__class__.__qualname__}"
